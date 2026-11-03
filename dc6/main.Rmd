@@ -1,0 +1,167 @@
+---
+title: "Stablecoins — compare USDC, USDT and DAI transfer sizes and volumes"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, message = FALSE)
+```
+
+We want to compare three major Ethereum stablecoins:
+
+-  USDC (smart contract address: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)
+-  USDT (smart contract address: 0xdac17f958d2ee523a2206206994597c13d831ec7)
+-  DAI (smart contract address: 0x6b175474e89094c44da98b954eedeac495271d0f)
+
+
+We will investigate two questions:
+
+1. How do their transfer sizes differ?
+2. How much transfer volume does each stablecoin generate?
+
+Our workflow is:
+
+```text
+Ethereum
+   ↓
+Etherscan
+   ↓
+ERC-20 transfer events
+   ↓
+R / tidyverse
+   ↓
+transfer sizes + transfer volumes
+```
+
+We use Etherscan to retrieve the already indexed ERC-20 transfer events. Etherscan’s `tokentx` endpoint can be filtered directly by token contract, so we do not need to download unrelated ERC-20 transfers first.
+
+We use the term transfer rather than transaction throughout the lab: one Ethereum transaction can generate several ERC-20 transfer events.
+
+## Libraries
+
+```{r}
+library(tidyverse)
+library(httr2)
+```
+
+## Retrieve the transfers from Etherscan
+
+The API key is not written in the code, so it does not end up on GitHub. It is read from the environment variable `ETHERSCAN_API_KEY` (set it once in the `.Renviron` file and restart R).
+
+For each token we ask for the 10,000 most recent transfers (`sort=desc`). This is the maximum that Etherscan returns for a single query.
+
+```{r}
+api_key <- Sys.getenv("ETHERSCAN_API_KEY")
+
+contracts <- c("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC
+               "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT
+               "0x6b175474e89094c44da98b954eedeac495271d0f")  # DAI
+
+read_transfers <- function(contract) {
+  url <- paste0("https://api.etherscan.io/v2/api?chainid=1&module=account&action=tokentx",
+                "&contractaddress=", contract,
+                "&page=1&offset=10000&sort=desc&apikey=", api_key)
+  response <- request(url) |> req_perform() |> resp_body_json()
+  bind_rows(response$result)
+}
+
+# one call per token, then stack the three tables
+transfers_raw <- map(contracts, read_transfers) |>
+  bind_rows()
+
+# amount in tokens (≈ USD) and time in seconds
+transfers <- transfers_raw |>
+  transmute(token = tokenSymbol,
+            hash, from, to,
+            amount = as.numeric(value) / 10^as.numeric(tokenDecimal),
+            time = as.numeric(timeStamp))
+
+# transfers and distinct transactions per token
+transfers |>
+  group_by(token) |>
+  summarise(transfers = n(),
+            transactions = n_distinct(hash),
+            missing = sum(is.na(amount) | is.na(time)))
+```
+
+Some transfers have amount 0 (often spam or test transfers). We count them and leave them out of the size analysis.
+
+```{r}
+transfers |>
+  filter(amount == 0) |>
+  count(token)
+```
+
+## 1. How do their transfer sizes differ?
+
+```{r}
+sizes <- transfers |>
+  filter(amount > 0)
+
+# summary statistics of the transfer size
+sizes |>
+  group_by(token) |>
+  summarise(n = n(),
+            mean = mean(amount),
+            median = median(amount),
+            min = min(amount),
+            max = max(amount)) |>
+  arrange(desc(median))
+```
+
+Transfer sizes span many orders of magnitude, so we use a logarithmic x axis.
+
+```{r}
+ggplot(sizes) +
+  geom_histogram(aes(x = amount), binwidth = 0.25) +
+  scale_x_log10() +
+  facet_wrap(~ token, ncol = 1) +
+  labs(x = "transfer size (tokens ≈ USD, log scale)",
+       y = "number of transfers")
+```
+
+Share of transfers (%) in each size class:
+
+```{r}
+sizes |>
+  mutate(size_class = cut(amount, c(0, 100, 10000, 1000000, Inf),
+                          labels = c("< 100", "100 to 10k", "10k to 1M", "1M or more"),
+                          right = FALSE)) |>
+  count(token, size_class) |>
+  group_by(token) |>
+  mutate(share = round(n / sum(n) * 100, 1)) |>
+  select(-n) |>
+  pivot_wider(names_from = token, values_from = share, values_fill = 0)
+```
+
+## 2. How much transfer volume does each stablecoin generate?
+
+The 10,000 most recent transfers cover a different time window for each token (the more active the token, the shorter the window). To compare the tokens fairly we divide the volume by the length of the window and get the volume per hour.
+
+Transfers from or to the zero address are mints (new tokens created) and burns (tokens destroyed): we also report how much of the volume they make up.
+
+```{r}
+zero_address <- "0x0000000000000000000000000000000000000000"
+
+volumes <- transfers |>
+  mutate(mint_burn = from == zero_address | to == zero_address) |>
+  group_by(token) |>
+  summarise(transfers = n(),
+            volume = sum(amount),
+            mint_burn_share = sum(amount[mint_burn]) / volume * 100,
+            start = as_datetime(min(time)),
+            end = as_datetime(max(time)),
+            hours = (max(time) - min(time)) / 3600) |>
+  mutate(transfers_per_hour = transfers / hours,
+         volume_per_hour = volume / hours) |>
+  arrange(desc(volume_per_hour))
+
+volumes
+```
+
+```{r}
+ggplot(volumes) +
+  geom_col(aes(x = reorder(token, -volume_per_hour), y = volume_per_hour / 1e6)) +
+  labs(x = "stablecoin",
+       y = "transfer volume per hour (million USD)")
+```
