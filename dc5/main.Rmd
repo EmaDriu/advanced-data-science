@@ -1,0 +1,121 @@
+---
+title: "Concentration of S&P 500 index"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE)
+```
+
+In this data challege we study how concentrated the S&P 500 is among its constituent companies.
+
+1. The S&P 500 (Standard & Poor's 500) is a stock market index that tracks the performance of 500 of the largest publicly traded companies in the United States.
+2. It covers roughly 80% of the total value of the U.S. stock market.
+3. It is a market-capitalization-weighted index. Larger companies have a much bigger impact on its value than smaller components
+
+
+We will use:
+
+```{r}
+library(tidyverse)
+library(tidyquant)
+library(ineq)
+```
+
+The three packages have different roles:
+
+```text
+tidyquant    retrieve the S&P 500 constituents and weights
+tidyverse    manipulate and visualize the data
+ineq         calculate the Lorenz curve and Gini coefficient
+```
+
+Our main questions are:
+
+1. How unequal are the company weights in the S&P 500?
+
+```{r}
+sp500 <- tq_index("SP500")
+
+# weights sorted from the largest to the smallest
+weights <- sp500 |>
+  filter(weight > 0) |>
+  arrange(desc(weight))
+
+# the 10 largest companies by weight
+weights |>
+  select(symbol, company, weight) |>
+  head(10)
+
+# share of the index held by the top 10 companies
+sum(weights$weight[1:10]) / sum(weights$weight)
+
+ggplot(weights) +
+  geom_histogram(aes(x = weight * 100), binwidth = 0.1) +
+  labs(x = "weight (%)", y = "number of companies")
+
+# Lorenz curve of the weights
+lc <- Lc(weights$weight)
+lorenz <- tibble(p = lc$p, L = lc$L)
+
+ggplot(lorenz) +
+  geom_line(aes(x = p, y = L)) +
+  geom_abline(linetype = "dashed") +
+  labs(x = "cumulative share of companies",
+       y = "cumulative share of index weight")
+```
+
+2. How much of the index is represented by its largest companies?
+
+```{r}
+# share of the index held by the n largest companies
+cumulative <- tibble(
+  rank = 1:nrow(weights),
+  share = cumsum(weights$weight) / sum(weights$weight)
+)
+
+cumulative |>
+  filter(rank %in% c(1, 5, 10, 20, 50, 100))
+
+ggplot(cumulative) +
+  geom_line(aes(x = rank, y = share * 100)) +
+  labs(x = "number of largest companies",
+       y = "cumulative share of the index (%)")
+
+# smallest number of companies holding at least half of the index
+cumulative |>
+  filter(share >= 0.5) |>
+  head(1) |>
+  mutate(fraction_of_companies = rank / nrow(cumulative))
+```
+
+3. What does the Lorenz curve tell us about concentration?
+
+```{r}
+# share of the index held by the smallest x% of companies
+bottom_share <- function(x) {
+  lorenz$L[lorenz$p >= x][1]
+}
+
+bottom_share(0.5)       # smallest 50%
+bottom_share(0.8)       # smallest 80%
+1 - bottom_share(0.9)   # largest 10%
+1 - bottom_share(0.99)  # largest 1%
+
+ggplot(lorenz) +
+  geom_line(aes(x = p, y = L)) +
+  geom_abline(linetype = "dashed") +
+  geom_vline(xintercept = 0.5, linetype = "dotted") +
+  labs(x = "cumulative share of companies (smallest first)",
+       y = "cumulative share of index weight")
+```
+
+4. What is the Gini coefficient of the S&P 500 weights?
+
+```{r}
+# Gini coefficient: 0 = perfect equality, 1 = one company holds everything
+Gini(weights$weight)
+
+# Gini without the 10 largest companies
+Gini(weights$weight[-(1:10)])
+```
