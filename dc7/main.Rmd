@@ -1,0 +1,51 @@
+How life expectancy change over time for each continent?
+Life expectancy for a country is the mean length of life over people of a country. Using variables life expectancy and population of a country:
+
+
+```{r setup, include=FALSE}
+# cache results
+knitr::opts_chunk$set(cache=TRUE, echo = TRUE, eval = TRUE, message=FALSE, warning = FALSE, fig.align='center')
+```
+
+```{r, message = FALSE, warning=FALSE}
+library(tidyverse)
+library(modelr)
+library(gapminder)
+library(broom)
+```
+
+derive a formula to compute life expectancy of a continent (a group of countries)
+
+
+$$
+\text{lifeExp}_{continent} = \frac{\sum_i \text{lifeExp}_i \cdot \text{population}_i}{\sum_i \text{population}_i}
+$$
+
+plot how life expectancy changed over time for each continent
+```{r}
+continents <- gapminder |>
+  mutate(pop = as.numeric(pop)) |>
+  group_by(continent, year) |>
+  summarise(lifeExp = sum(lifeExp * pop) / sum(pop))
+
+ggplot(data = continents) +
+  geom_line(mapping = aes(x = year, y = lifeExp, color = continent)) +
+  labs(x = "Year", y = "Life expectancy")
+```
+
+do the same for the whole planet
+
+```{r}
+world <- gapminder |>
+  mutate(pop = as.numeric(pop)) |>
+  group_by(year) |>
+  summarise(lifeExp = sum(lifeExp * pop) / sum(pop))
+  
+ggplot(data = world) +
+  geom_line(mapping = aes(x = year, y = lifeExp)) +
+  labs(x = "Year", y = "Life expectancy")
+```
+
+
+
+
